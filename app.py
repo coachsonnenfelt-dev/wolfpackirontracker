@@ -50,8 +50,8 @@ def save_attendance(date, attendance_data):
     return True
 
 # --- APP LAYOUT ---
-st.set_page_config(page_title="Weight Room Tracker", page_icon="💪")
-st.title("🏋️ Weight Room Attendance")
+st.set_page_config(page_title="Wolfpack Weight Room Tracker", page_icon="💪")
+st.title("🏋️ Wolfpack Weight Room Attendance")
 
 tab1, tab2, tab3 = st.tabs(["📝 Daily Log", "📊 Weekly Stats", "👥 Roster Management"])
 
