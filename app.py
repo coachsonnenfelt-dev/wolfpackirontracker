@@ -10,7 +10,7 @@ WEEKLY_GOAL = 4
 
 # --- SETUP FILES IF THEY DON'T EXIST ---
 if not os.path.exists(ROSTER_FILE):
-    pd.DataFrame(columns=['Name']).to_csv(ROSTER_FILE, index=False)
+    pd.DataFrame(columns=['Number', 'Name']).to_csv(ROSTER_FILE, index=False)
 
 if not os.path.exists(LOG_FILE):
     pd.DataFrame(columns=['Date', 'Name', 'Status']).to_csv(LOG_FILE, index=False)
@@ -18,6 +18,20 @@ if not os.path.exists(LOG_FILE):
 # --- HELPER FUNCTIONS ---
 def load_data():
     roster = pd.read_csv(ROSTER_FILE)
+    # Ensure roster has 'Number' column for backwards compatibility
+    if 'Number' not in roster.columns:
+        # Assign auto numbers starting at 1 for existing rows
+        roster.insert(0, 'Number', range(1, len(roster) + 1))
+        roster.to_csv(ROSTER_FILE, index=False)
+
+    # Normalize Number column to string representation (preserve what user types where possible)
+    try:
+        # Attempt to convert numeric-like values to integers (so '1.0' doesn't appear)
+        nums = pd.to_numeric(roster['Number'], errors='coerce')
+        roster['Number'] = nums.where(nums.isna(), nums.astype('Int64').astype(str)).fillna(roster['Number'].astype(str))
+    except Exception:
+        roster['Number'] = roster['Number'].astype(str)
+
     if os.path.exists(LOG_FILE) and os.path.getsize(LOG_FILE) > 0:
         logs = pd.read_csv(LOG_FILE)
         # Ensure Date is datetime objects for filtering
@@ -49,6 +63,10 @@ def save_attendance(date, attendance_data):
     updated_logs.to_csv(LOG_FILE, index=False)
     return True
 
+def save_roster(roster_df):
+    # Save roster ensuring Number is saved as entered
+    roster_df.to_csv(ROSTER_FILE, index=False)
+
 # --- APP LAYOUT ---
 st.set_page_config(page_title="Wolfpack Weight Room Tracker", page_icon="💪")
 st.title("🏋️ Wolfpack Weight Room Attendance")
@@ -75,8 +93,24 @@ with tab1:
             # Check if data already exists for this day to pre-fill
             existing_for_day = logs[logs['Date'] == selected_date]
             
-            # Create a row for each player
-            for player in roster['Name'].sort_values():
+            # Create a row for each player sorted by Number (numeric where possible) then Name
+            def sort_key(row):
+                try:
+                    n = int(row['Number'])
+                except Exception:
+                    # If Number is non-numeric or empty, sort after numeric ones
+                    n = 10**9
+                return (n, row['Name'].lower())
+            
+            roster_sorted = roster.copy()
+            roster_sorted['__sort_key'] = roster_sorted.apply(sort_key, axis=1)
+            roster_sorted = roster_sorted.sort_values('__sort_key').drop(columns='__sort_key')
+
+            for _, row in roster_sorted.iterrows():
+                player = row['Name']
+                number = row['Number']
+                display_label = f"{number} - {player}" if str(number).strip() != '' else player
+
                 choices = ['Present', 'Absent', 'Tardy']
                 key = f"radio_{player}"
                 # Default to 'Absent' unless an existing record for the selected date says otherwise
@@ -99,11 +133,11 @@ with tab1:
                 
                 col1, col2 = st.columns([2, 3])
                 with col1:
-                    st.write(f"**{player}**")
+                    st.write(f"**{display_label}**")
                 with col2:
                     # Set the radio with the session state default; coach can actively change it
                     attendance_data[player] = st.radio(
-                        f"Status for {player}", 
+                        f"Status for {display_label}", 
                         choices,
                         index=choices.index(st.session_state[key]), 
                         key=key, 
@@ -138,8 +172,7 @@ with tab2:
         mask = (logs['Date'] >= start_of_week) & (logs['Date'] <= end_of_week)
         weekly_logs = logs.loc[mask]
         
-        # Filter for credit (Present or Tardy counts as credit?)
-        # Assuming Tardy counts as a workout, just late.
+        # Assuming Tardy counts as credit
         credit_logs = weekly_logs[weekly_logs['Status'].isin(['Present', 'Tardy'])]
         
         # Count workouts per player
@@ -168,17 +201,69 @@ with tab3:
     
     with col1:
         st.subheader("Add Player")
-        new_player = st.text_input("Player Name")
+        new_player = st.text_input("Player Name", key="new_player_name")
+        new_number = st.text_input("Player Number (leave blank to skip)", key="new_player_number")
         if st.button("Add to Roster"):
-            if new_player and new_player not in roster['Name'].values:
-                new_entry = pd.DataFrame([{'Name': new_player}])
-                updated_roster = pd.concat([roster, new_entry], ignore_index=True)
-                updated_roster.to_csv(ROSTER_FILE, index=False)
-                st.success(f"Added {new_player}")
-                st.rerun()
-            elif new_player in roster['Name'].values:
-                st.error("Player already exists.")
+            # Basic validation
+            if not new_player:
+                st.error("Please provide a player name.")
+            else:
+                # Normalize number to string (keeps whatever user types)
+                num_str = str(new_number).strip()
+                # Check duplicates by name or number (if provided)
+                if new_player in roster['Name'].values:
+                    st.error("Player already exists.")
+                elif num_str != '' and num_str in roster['Number'].values:
+                    st.error("That number is already assigned to another player.")
+                else:
+                    new_entry = pd.DataFrame([{'Number': num_str, 'Name': new_player}])
+                    updated_roster = pd.concat([roster, new_entry], ignore_index=True)
+                    save_roster(updated_roster)
+                    st.success(f"Added {new_player} with number '{num_str or '(none)'}'")
+                    st.rerun()
     
     with col2:
         st.subheader("Current Roster")
-        st.dataframe(roster, height=300)
+        st.write("Edit numbers below and press 'Save Roster Changes' to persist.")
+        
+        # Provide editable number inputs for each player
+        edit_cols = st.columns([1, 3, 2])  # Number, Name, (spacer)
+        edit_cols[0].markdown("**Number**")
+        edit_cols[1].markdown("**Name**")
+        edits = {}
+        
+        # Show rows in numeric order when possible
+        def sort_key(row):
+            try:
+                n = int(row['Number'])
+            except Exception:
+                n = 10**9
+            return (n, row['Name'].lower())
+        
+        roster_sorted = roster.copy()
+        roster_sorted['__sort_key'] = roster_sorted.apply(sort_key, axis=1)
+        roster_sorted = roster_sorted.sort_values('__sort_key').drop(columns='__sort_key').reset_index(drop=True)
+
+        for idx, row in roster_sorted.iterrows():
+            name = row['Name']
+            number = row['Number']
+            c_num, c_name = st.columns([1, 3])
+            # Use text_input for number to allow non-numeric entries if desired
+            new_num = c_num.text_input(f"num_{idx}", value=str(number), key=f"num_{idx}")
+            c_name.write(f"**{name}**")
+            edits[name] = new_num.strip()
+        
+        if st.button("Save Roster Changes"):
+            # Validate duplicate numbers (excluding blank)
+            nums = [v for v in edits.values() if v != ""]
+            if len(nums) != len(set(nums)):
+                st.error("Duplicate numbers detected. Each non-blank number must be unique.")
+            else:
+                # Build updated roster preserving the sorted display order
+                updated_df = pd.DataFrame([{'Number': edits[name], 'Name': name} for name in roster_sorted['Name']])
+                save_roster(updated_df)
+                st.success("Roster updated.")
+                st.rerun()
+        
+        st.markdown("---")
+        st.dataframe(roster[['Number', 'Name']], height=300)
