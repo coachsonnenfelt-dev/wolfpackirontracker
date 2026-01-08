@@ -77,27 +77,36 @@ with tab1:
             
             # Create a row for each player
             for player in roster['Name'].sort_values():
-                # Default status
-                default_idx = 1 # Absent by default
+                choices = ['Present', 'Absent', 'Tardy']
+                key = f"radio_{player}"
+                # Default to 'Absent' unless an existing record for the selected date says otherwise
+                default_status = 'Absent'
                 
-                # If we have a record, use that
                 if not existing_for_day.empty:
                     record = existing_for_day[existing_for_day['Name'] == player]
                     if not record.empty:
                         status = record.iloc[0]['Status']
-                        if status == 'Present': default_idx = 0
-                        elif status == 'Absent': default_idx = 1
-                        elif status == 'Tardy': default_idx = 2
+                        if status in choices:
+                            default_status = status
+                
+                # Initialize session state for the radio if not present so it shows 'Absent' by default
+                if key not in st.session_state:
+                    st.session_state[key] = default_status
+                else:
+                    # If there's an existing record for the day, override session state with it
+                    if not existing_for_day.empty and player in existing_for_day['Name'].values:
+                        st.session_state[key] = default_status
                 
                 col1, col2 = st.columns([2, 3])
                 with col1:
                     st.write(f"**{player}**")
                 with col2:
+                    # Set the radio with the session state default; coach can actively change it
                     attendance_data[player] = st.radio(
                         f"Status for {player}", 
-                        ['Present', 'Absent', 'Tardy'], 
-                        index=default_idx, 
-                        key=f"radio_{player}", 
+                        choices,
+                        index=choices.index(st.session_state[key]), 
+                        key=key, 
                         horizontal=True,
                         label_visibility="collapsed"
                     )
